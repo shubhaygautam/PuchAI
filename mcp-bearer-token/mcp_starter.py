@@ -1,5 +1,5 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, List, Dict, Optional
 import os
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -8,10 +8,9 @@ from mcp import ErrorData, McpError
 from mcp.server.auth.provider import AccessToken
 from mcp.types import TextContent, ImageContent, INVALID_PARAMS, INTERNAL_ERROR
 from pydantic import BaseModel, Field, AnyUrl
-
-import markdownify
 import httpx
-import readabilipy
+from datetime import datetime, timedelta
+import json
 
 # --- Load environment variables ---
 load_dotenv()
@@ -39,173 +38,315 @@ class SimpleBearerAuthProvider(BearerAuthProvider):
             )
         return None
 
-# --- Rich Tool Description model ---
-class RichToolDescription(BaseModel):
+# --- Models for Exam Bot ---
+class ExamInfo(BaseModel):
+    name: str
     description: str
-    use_when: str
-    side_effects: str | None = None
+    syllabus: Dict[str, List[str]]  # {subject: [topics]}
+    important_dates: Dict[str, str]
+    pattern: Dict[str, str]
+    resources: Dict[str, List[str]]  # {subject: [resources]}
 
-# --- Fetch Utility Class ---
-class Fetch:
-    USER_AGENT = "Puch/1.0 (Autonomous)"
+class Question(BaseModel):
+    text: str
+    options: List[str]
+    correct_answer: int
+    explanation: str
+    difficulty: str
 
-    @classmethod
-    async def fetch_url(
-        cls,
-        url: str,
-        user_agent: str,
-        force_raw: bool = False,
-    ) -> tuple[str, str]:
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.get(
-                    url,
-                    follow_redirects=True,
-                    headers={"User-Agent": user_agent},
-                    timeout=30,
-                )
-            except httpx.HTTPError as e:
-                raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"Failed to fetch {url}: {e!r}"))
+class StudyPlan(BaseModel):
+    exam: str
+    start_date: str
+    end_date: str
+    daily_schedule: Dict[str, Dict]
+    revision_days: List[str]
 
-            if response.status_code >= 400:
-                raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"Failed to fetch {url} - status code {response.status_code}"))
+# --- Exam Database ---
+EXAM_DATABASE = {
+    "JEE": {
+        "name": "Joint Entrance Examination (JEE)",
+        "description": "Engineering entrance exam for IITs, NITs, and other colleges",
+        "syllabus": {
+            "Physics": ["Mechanics", "Electrodynamics", "Thermodynamics", "Optics", "Modern Physics"],
+            "Chemistry": ["Physical Chemistry", "Organic Chemistry", "Inorganic Chemistry"],
+            "Mathematics": ["Algebra", "Calculus", "Coordinate Geometry", "Trigonometry"]
+        },
+        "important_dates": {
+            "registration": "2023-12-15",
+            "mains": "2024-01-24",
+            "advanced": "2024-05-26"
+        },
+        "pattern": {
+            "duration": "3 hours",
+            "questions": "75 (25 per subject)",
+            "marking": "+4 for correct, -1 for incorrect"
+        },
+        "resources": {
+            "Physics": ["HC Verma", "Irodov", "NCERT"],
+            "Chemistry": ["OP Tandon", "MS Chouhan", "NCERT"],
+            "Mathematics": ["RD Sharma", "Arihant", "NCERT"]
+        }
+    },
+    "NEET": {
+        "name": "National Eligibility cum Entrance Test (NEET)",
+        "description": "Medical entrance exam for MBBS/BDS courses",
+        "syllabus": {
+            "Physics": ["Mechanics", "Optics", "Thermodynamics"],
+            "Chemistry": ["Organic", "Inorganic", "Physical"],
+            "Biology": ["Botany", "Zoology"]
+        },
+        "important_dates": {
+            "registration": "2024-03-01",
+            "exam": "2024-05-05"
+        },
+        "pattern": {
+            "duration": "3 hours 20 minutes",
+            "questions": "180 (45 per subject)",
+            "marking": "+4 for correct, -1 for incorrect"
+        },
+        "resources": {
+            "Physics": ["NCERT", "DC Pandey"],
+            "Chemistry": ["NCERT", "Morrison Boyd"],
+            "Biology": ["NCERT", "Trueman"]
+        }
+    }
+}
 
-            page_raw = response.text
-
-        content_type = response.headers.get("content-type", "")
-        is_page_html = "text/html" in content_type
-
-        if is_page_html and not force_raw:
-            return cls.extract_content_from_html(page_raw), ""
-
-        return (
-            page_raw,
-            f"Content type {content_type} cannot be simplified to markdown, but here is the raw content:\n",
-        )
-
-    @staticmethod
-    def extract_content_from_html(html: str) -> str:
-        """Extract and convert HTML content to Markdown format."""
-        ret = readabilipy.simple_json.simple_json_from_html_string(html, use_readability=True)
-        if not ret or not ret.get("content"):
-            return "<error>Page failed to be simplified from HTML</error>"
-        content = markdownify.markdownify(ret["content"], heading_style=markdownify.ATX)
-        return content
-
-    @staticmethod
-    async def google_search_links(query: str, num_results: int = 5) -> list[str]:
-        """
-        Perform a scoped DuckDuckGo search and return a list of job posting URLs.
-        (Using DuckDuckGo because Google blocks most programmatic scraping.)
-        """
-        ddg_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
-        links = []
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(ddg_url, headers={"User-Agent": Fetch.USER_AGENT})
-            if resp.status_code != 200:
-                return ["<error>Failed to perform search.</error>"]
-
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for a in soup.find_all("a", class_="result__a", href=True):
-            href = a["href"]
-            if "http" in href:
-                links.append(href)
-            if len(links) >= num_results:
-                break
-
-        return links or ["<error>No results found.</error>"]
+QUESTION_BANK = {
+    "JEE": {
+        "Physics": [
+            {
+                "text": "What is the SI unit of force?",
+                "options": ["Newton", "Joule", "Watt", "Pascal"],
+                "correct_answer": 0,
+                "explanation": "Force is measured in Newtons (N) in the SI system.",
+                "difficulty": "easy"
+            }
+        ],
+        "Mathematics": [
+            {
+                "text": "What is the derivative of x²?",
+                "options": ["x", "2x", "x³/3", "1"],
+                "correct_answer": 1,
+                "explanation": "The derivative of xⁿ is n*xⁿ⁻¹",
+                "difficulty": "easy"
+            }
+        ]
+    }
+}
 
 # --- MCP Server Setup ---
 mcp = FastMCP(
-    "Job Finder MCP Server",
+    "Competitive Exam Prep Bot",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
 
-# --- Tool: validate (required by Puch) ---
+# --- Required Validation Tool ---
 @mcp.tool
 async def validate() -> str:
     return MY_NUMBER
 
-# --- Tool: job_finder (now smart!) ---
-JobFinderDescription = RichToolDescription(
-    description="Smart job tool: analyze descriptions, fetch URLs, or search jobs based on free text.",
-    use_when="Use this to evaluate job descriptions or search for jobs using freeform goals.",
-    side_effects="Returns insights, fetched job descriptions, or relevant job links.",
-)
+# --- Exam Selection Tool ---
+@mcp.tool(description="Get list of supported competitive exams")
+async def get_exams() -> List[str]:
+    return list(EXAM_DATABASE.keys())
 
-@mcp.tool(description=JobFinderDescription.model_dump_json())
-async def job_finder(
-    user_goal: Annotated[str, Field(description="The user's goal (can be a description, intent, or freeform query)")],
-    job_description: Annotated[str | None, Field(description="Full job description text, if available.")] = None,
-    job_url: Annotated[AnyUrl | None, Field(description="A URL to fetch a job description from.")] = None,
-    raw: Annotated[bool, Field(description="Return raw HTML content if True")] = False,
-) -> str:
-    """
-    Handles multiple job discovery methods: direct description, URL fetch, or freeform search query.
-    """
-    if job_description:
-        return (
-            f"📝 **Job Description Analysis**\n\n"
-            f"---\n{job_description.strip()}\n---\n\n"
-            f"User Goal: **{user_goal}**\n\n"
-            f"💡 Suggestions:\n- Tailor your resume.\n- Evaluate skill match.\n- Consider applying if relevant."
-        )
+# --- Exam Information Tool ---
+@mcp.tool(description="Get detailed information about a specific exam")
+async def get_exam_info(
+    exam_name: Annotated[str, Field(description="Name of the exam (e.g., JEE, NEET)")]
+) -> ExamInfo:
+    exam = EXAM_DATABASE.get(exam_name.upper())
+    if not exam:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="Exam not found"))
+    return exam
 
-    if job_url:
-        content, _ = await Fetch.fetch_url(str(job_url), Fetch.USER_AGENT, force_raw=raw)
-        return (
-            f"🔗 **Fetched Job Posting from URL**: {job_url}\n\n"
-            f"---\n{content.strip()}\n---\n\n"
-            f"User Goal: **{user_goal}**"
-        )
+# --- Quiz Generator Tool ---
+@mcp.tool(description="Generate quiz questions for a specific exam topic")
+async def generate_quiz(
+    exam_name: Annotated[str, Field(description="Name of the exam")],
+    subject: Annotated[str, Field(description="Subject/topic for the quiz")],
+    difficulty: Annotated[str, Field(description="Difficulty level (easy, medium, hard)")] = "medium",
+    count: Annotated[int, Field(description="Number of questions")] = 5
+) -> List[Question]:
+    exam = EXAM_DATABASE.get(exam_name.upper())
+    if not exam:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="Exam not found"))
+    
+    if subject not in exam["syllabus"]:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="Subject not found in exam syllabus"))
+    
+    questions = QUESTION_BANK.get(exam_name.upper(), {}).get(subject, [])
+    filtered = [q for q in questions if q["difficulty"] == difficulty]
+    
+    if not filtered:
+        return [{
+            "text": "Sample question - this would be from real database",
+            "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+            "correct_answer": 0,
+            "explanation": "This is a sample explanation",
+            "difficulty": difficulty
+        } for _ in range(min(count, 5))]
+    
+    return filtered[:count]
 
-    if "look for" in user_goal.lower() or "find" in user_goal.lower():
-        links = await Fetch.google_search_links(user_goal)
-        return (
-            f"🔍 **Search Results for**: _{user_goal}_\n\n" +
-            "\n".join(f"- {link}" for link in links)
-        )
+# --- Study Plan Generator ---
+@mcp.tool(description="Create personalized study plan for an exam")
+async def generate_study_plan(
+    exam_name: Annotated[str, Field(description="Name of the exam")],
+    start_date: Annotated[str, Field(description="Start date (YYYY-MM-DD)")],
+    end_date: Annotated[str, Field(description="Exam date (YYYY-MM-DD)")],
+    hours_per_day: Annotated[int, Field(description="Available study hours per day")] = 2,
+    weak_areas: Annotated[List[str], Field(description="List of weak topics")] = None,
+    strong_areas: Annotated[List[str], Field(description="List of strong topics")] = None
+) -> StudyPlan:
+    exam = EXAM_DATABASE.get(exam_name.upper())
+    if not exam:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="Exam not found"))
+    
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    days = (end - start).days
+    
+    if days <= 0:
+        raise McpError(ErrorData(code=INVALID_PARAMS, message="End date must be after start date"))
+    
+    # Calculate topic weights
+    topic_weights = {}
+    for subject, topics in exam["syllabus"].items():
+        for topic in topics:
+            if weak_areas and topic in weak_areas:
+                topic_weights[f"{subject}: {topic}"] = 3
+            elif strong_areas and topic in strong_areas:
+                topic_weights[f"{subject}: {topic}"] = 1
+            else:
+                topic_weights[f"{subject}: {topic}"] = 2
+    
+    # Create daily schedule
+    daily_schedule = {}
+    current_date = start
+    topics = list(topic_weights.keys())
+    weights = list(topic_weights.values())
+    
+    for i in range(days):
+        date_str = current_date.strftime("%Y-%m-%d")
+        
+        # Select topic based on weight
+        topic = topics[i % len(topics)]
+        
+        daily_schedule[date_str] = {
+            "topic": topic,
+            "hours": hours_per_day,
+            "activities": [
+                f"Study {topic} for {hours_per_day*0.6} hours",
+                f"Practice questions for {hours_per_day*0.4} hours"
+            ],
+            "resources": exam["resources"].get(topic.split(":")[0], ["General resources"])
+        }
+        
+        current_date += timedelta(days=1)
+    
+    # Add revision days (last 7 days)
+    revision_days = []
+    for i in range(1, min(8, days)):
+        revision_date = (end - timedelta(days=i)).strftime("%Y-%m-%d")
+        revision_days.append(revision_date)
+        daily_schedule[revision_date] = {
+            "topic": "Revision",
+            "hours": hours_per_day,
+            "activities": [
+                "Review all notes",
+                "Solve previous year papers",
+                "Take mock test"
+            ]
+        }
+    
+    return {
+        "exam": exam_name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "daily_schedule": daily_schedule,
+        "revision_days": revision_days
+    }
 
-    raise McpError(ErrorData(code=INVALID_PARAMS, message="Please provide either a job description, a job URL, or a search query in user_goal."))
+# --- College Predictor ---
+@mcp.tool(description="Predict colleges based on expected marks/rank")
+async def predict_colleges(
+    exam_name: Annotated[str, Field(description="Name of the exam")],
+    expected_rank: Annotated[int, Field(description="Expected rank")] = None,
+    expected_marks: Annotated[float, Field(description="Expected marks")] = None,
+    category: Annotated[str, Field(description="Category (General, OBC, SC, ST)")] = "General",
+    preferred_location: Annotated[str, Field(description="Preferred region")] = None
+) -> List[Dict]:
+    # Sample data - in real implementation this would connect to a database
+    colleges = {
+        "JEE": [
+            {
+                "name": "IIT Bombay",
+                "cutoff_rank": 100,
+                "cutoff_marks": 280,
+                "fees": "₹2.5L/year",
+                "location": "Mumbai"
+            },
+            {
+                "name": "IIT Delhi",
+                "cutoff_rank": 200,
+                "cutoff_marks": 270,
+                "fees": "₹2.3L/year",
+                "location": "Delhi"
+            },
+            {
+                "name": "NIT Trichy",
+                "cutoff_rank": 1000,
+                "cutoff_marks": 220,
+                "fees": "₹1.5L/year",
+                "location": "Tamil Nadu"
+            }
+        ],
+        "NEET": [
+            {
+                "name": "AIIMS Delhi",
+                "cutoff_rank": 100,
+                "cutoff_marks": 680,
+                "fees": "₹10K/year",
+                "location": "Delhi"
+            }
+        ]
+    }
+    
+    exam_colleges = colleges.get(exam_name.upper(), [])
+    results = []
+    
+    for college in exam_colleges:
+        if expected_rank and college["cutoff_rank"] < expected_rank:
+            continue
+        if expected_marks and college["cutoff_marks"] > expected_marks:
+            continue
+        if preferred_location and preferred_location.lower() not in college["location"].lower():
+            continue
+        
+        results.append(college)
+    
+    return results[:10]  # Return top 10 matches
 
-
-# Image inputs and sending images
-
-MAKE_IMG_BLACK_AND_WHITE_DESCRIPTION = RichToolDescription(
-    description="Convert an image to black and white and save it.",
-    use_when="Use this tool when the user provides an image URL and requests it to be converted to black and white.",
-    side_effects="The image will be processed and saved in a black and white format.",
-)
-
-@mcp.tool(description=MAKE_IMG_BLACK_AND_WHITE_DESCRIPTION.model_dump_json())
-async def make_img_black_and_white(
-    puch_image_data: Annotated[str, Field(description="Base64-encoded image data to convert to black and white")] = None,
-) -> list[TextContent | ImageContent]:
-    import base64
-    import io
-
-    from PIL import Image
-
-    try:
-        image_bytes = base64.b64decode(puch_image_data)
-        image = Image.open(io.BytesIO(image_bytes))
-
-        bw_image = image.convert("L")
-
-        buf = io.BytesIO()
-        bw_image.save(buf, format="PNG")
-        bw_bytes = buf.getvalue()
-        bw_base64 = base64.b64encode(bw_bytes).decode("utf-8")
-
-        return [ImageContent(type="image", mimeType="image/png", data=bw_base64)]
-    except Exception as e:
-        raise McpError(ErrorData(code=INTERNAL_ERROR, message=str(e)))
+# --- Daily Question Reminder ---
+@mcp.tool(description="Get daily practice question on a topic")
+async def daily_question(
+    exam_name: Annotated[str, Field(description="Name of the exam")],
+    topic: Annotated[str, Field(description="Topic for the question")]
+) -> Question:
+    questions = await generate_quiz(exam_name, topic, "medium", 1)
+    return questions[0] if questions else {
+        "text": "No questions available for this topic yet",
+        "options": [],
+        "correct_answer": -1,
+        "explanation": "",
+        "difficulty": ""
+    }
 
 # --- Run MCP Server ---
 async def main():
-    print("🚀 Starting MCP server on http://0.0.0.0:8086")
+    print("🚀 Starting Competitive Exam Bot MCP server on http://0.0.0.0:8086")
     await mcp.run_async("streamable-http", host="0.0.0.0", port=8086)
 
 if __name__ == "__main__":
