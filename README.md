@@ -1,167 +1,56 @@
-# MCP Starter for Puch AI
+# JEE Exam Prep MCP Server
 
-This is a starter template for creating your own Model Context Protocol (MCP) server that works with Puch AI. It comes with ready-to-use tools for job searching and image processing.
+This project implements a Model Context Protocol (MCP) server for Puch AI that powers a WhatsApp chatbot helping students prepare for the Joint Entrance Examination (JEE).
 
-## What is MCP?
+The server exposes tools for quizzes, explanations, notes, formulas, progress tracking, reminders and official exam information. All factual data is stored in an SQLite database so answers remain consistent. An optional generative AI endpoint (e.g. Gemini) can be provided to rephrase explanations and to interpret natural language reminder times.
 
-MCP (Model Context Protocol) allows AI assistants like Puch to connect to external tools and data sources safely. Think of it like giving your AI extra superpowers without compromising security.
+## Features
+- ✅ Validate a user's phone number from the bearer token
+- 📚 Generate quizzes from a question bank and check answers with explanations
+- 📝 Show study notes and important formulas
+- 📈 Track study progress and daily streaks
+- ⏰ Set reminders using natural language like "tomorrow at 7am"
+- 📅 Show official exam dates and pattern
 
-## What's Included in This Starter?
-
-### 🎯 Job Finder Tool
-- **Analyze job descriptions** - Paste any job description and get smart insights
-- **Fetch job postings from URLs** - Give a job posting link and get the full details
-- **Search for jobs** - Use natural language to find relevant job opportunities
-
-### 🖼️ Image Processing Tool
-- **Convert images to black & white** - Upload any image and get a monochrome version
-
-### 🔐 Built-in Authentication
-- Bearer token authentication (required by Puch AI)
-- Validation tool that returns your phone number
-
-## Quick Setup Guide
-
-### Step 1: Install Dependencies
-
-First, make sure you have Python 3.11 or higher installed. Then:
-
-```bash
-# Create virtual environment
-uv venv
-
-# Install all required packages
-uv sync
-
-# Activate the environment
-source .venv/bin/activate
-```
-
-### Step 2: Set Up Environment Variables
-
-Create a `.env` file in the project root:
-
-```bash
-# Copy the example file
-cp .env.example .env
-```
-
-Then edit `.env` and add your details:
-
-```env
-AUTH_TOKEN=your_secret_token_here
-MY_NUMBER=919876543210
-```
-
-**Important Notes:**
-- `AUTH_TOKEN`: This is your secret token for authentication. Keep it safe!
-- `MY_NUMBER`: Your WhatsApp number in format `{country_code}{number}` (e.g., `919876543210` for +91-9876543210)
-
-### Step 3: Run the Server
-
-```bash
-cd mcp-bearer-token
-python mcp_starter.py
-```
-
-You'll see: `🚀 Starting MCP server on http://0.0.0.0:8086`
-
-### Step 4: Make It Public (Required by Puch)
-
-Since Puch needs to access your server over HTTPS, you need to expose your local server:
-
-#### Option A: Using ngrok (Recommended)
-
-1. **Install ngrok:**
-   Download from https://ngrok.com/download
-
-2. **Get your authtoken:**
-   - Go to https://dashboard.ngrok.com/get-started/your-authtoken
-   - Copy your authtoken
-   - Run: `ngrok config add-authtoken YOUR_AUTHTOKEN`
-
-3. **Start the tunnel:**
+## Getting Started
+1. **Install dependencies**
    ```bash
-   ngrok http 8086
+   uv venv
+   uv sync
+   source .venv/bin/activate
    ```
-
-#### Option B: Deploy to Cloud
-
-You can also deploy this to services like:
-- Railway
-- Render
-- Heroku
-- DigitalOcean App Platform
-
-## How to Connect with Puch AI
-
-1. **[Open Puch AI](https://wa.me/+919998881729)** in your browser
-2. **Start a new conversation**
-3. **Use the connect command:**
+2. **Configure environment**
+   ```bash
+   cp .env.example .env
    ```
-   /mcp connect https://your-domain.ngrok.app/mcp your_secret_token_here
+   Fill in:
+   - `AUTH_TOKEN` – bearer token required by Puch AI
+   - `MY_NUMBER` – your WhatsApp number
+   - Optional `GEN_AI_URL` and `GEN_AI_KEY` for generative AI
+3. **Run the server**
+   ```bash
+   cd mcp-bearer-token
+   python mcp_starter.py
    ```
+   The server starts on `http://0.0.0.0:8086`.
 
-### Debug Mode
+Expose the port using a service like ngrok if you need public HTTPS access for Puch AI.
 
-To get more detailed error messages:
+## Database
+An SQLite database `jee_bot.db` is created automatically with sample questions, notes and formulas so the bot works immediately. All user progress and reminders are stored in this database.
 
-```
-/mcp diagnostics-level debug
-```
+## MCP Tools
+- `validate`
+- `exam_info`
+- `generate_quiz`
+- `check_answer`
+- `show_notes`
+- `show_formulas`
+- `progress`
+- `set_reminder`
+- `list_reminders`
 
-## Customizing the Starter
-
-### Adding New Tools
-
-1. **Create a new tool function:**
-   ```python
-   @mcp.tool(description="Your tool description")
-   async def your_tool_name(
-       parameter: Annotated[str, Field(description="Parameter description")]
-   ) -> str:
-       # Your tool logic here
-       return "Tool result"
-   ```
-
-2. **Add required imports** if needed
-
-
-## 📚 **Additional Documentation Resources**
-
-### **Official Puch AI MCP Documentation**
-- **Main Documentation**: https://puch.ai/mcp
-- **Protocol Compatibility**: Core MCP specification with Bearer & OAuth support
-- **Command Reference**: Complete MCP command documentation
-- **Server Requirements**: Tool registration, validation, HTTPS requirements
-
-### **Technical Specifications**
-- **JSON-RPC 2.0 Specification**: https://www.jsonrpc.org/specification (for error handling)
-- **MCP Protocol**: Core protocol messages, tool definitions, authentication
-
-### **Supported vs Unsupported Features**
-
-**✓ Supported:**
-- Core protocol messages
-- Tool definitions and calls
-- Authentication (Bearer & OAuth)
-- Error handling
-
-**✗ Not Supported:**
-- Videos extension
-- Resources extension
-- Prompts extension
-
-## Getting Help
-
-- **Join Puch AI Discord:** https://discord.gg/VMCnMvYx
-- **Check Puch AI MCP docs:** https://puch.ai/mcp
-- **Puch WhatsApp Number:** +91 99988 81729
+These tools are ready to be connected to Puch AI via the `/mcp connect` command on WhatsApp.
 
 ---
-
-**Happy coding! 🚀**
-
-Use the hashtag `#BuildWithPuch` in your posts about your MCP!
-
-This starter makes it super easy to create your own MCP server for Puch AI. Just follow the setup steps and you'll be ready to extend Puch with your custom tools!
+Happy studying! 🎓
